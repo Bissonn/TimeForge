@@ -1,0 +1,913 @@
+# =================================================================
+# MASTER THESIS: STEP 1 - ARCHITECTURE SEARCH (HPO)
+# =================================================================
+# Goal: Find the best structural parameters (layers, heads, hidden)
+#       using a representative window size (336).
+#       The winning architecture will be frozen for all experiments.
+# =================================================================
+
+logging:
+  level: "INFO"
+
+datasets:
+  etth1_multivar:
+    path: "data/ETTh1.csv"
+    columns: ["OT", "HUFL", "HULL", "MUFL", "MULL", "LUFL", "LULL"]
+    freq: "h"
+    time_features: ["hour", "day_of_week", "day_of_year"]
+    past_covariates: [
+      "hour_sin", "hour_cos",
+      "day_of_week_sin", "day_of_week_cos",
+      "day_of_year_sin", "day_of_year_cos"
+    ]
+
+models:
+  # =========================================================
+  # MODEL DO OPTYMALIZACJI (HPO)
+  # Cel: Znaleźć najlepszą architekturę Baseline (bez RevIN)
+  # =========================================================
+  trans_hpo_baseline:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: false          # Szukamy architektury, która radzi sobie SAMA
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    epochs: 25
+    min_epochs: 10
+    early_stopping_patience: 6
+    learning_rate: 0.0005
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 50
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 10
+        n_warmup_steps: 10
+      params:
+        # Architektura
+        hidden_size: [64, 128, 256, 512]      
+        # Regularyzacja
+        dropout: [0.1, 0.2, 0.3]
+#        learning_rate: [0.0001, 0.0005, 0.001, 0.003, 0.01, 0.03]
+        learning_rate: {min: 0.0001, max: 0.05, log: true}
+
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_revin_96:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 64
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.2
+    epochs: 50                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 25
+    learning_rate: 0.0001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+                               # W Fazie 1 było 25.0 (bezpiecznie).
+                               # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+                               # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+                               # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+                               # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: {min: 0.0001, max: 0.02, log: true}
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_revin_336:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 256
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.3
+    epochs: 50                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 25
+    learning_rate: 0.0001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+                               # W Fazie 1 było 25.0 (bezpiecznie).
+                               # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+                               # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+                               # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+                               # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: {min: 0.0001, max: 0.02, log: true}
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_revin_720:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 512
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001trans_revin_720
+    dropout: 0.2
+    epochs: 50                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 25
+    learning_rate: 0.0001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+                               # W Fazie 1 było 25.0 (bezpiecznie).
+                               # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+                               # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+                               # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+                               # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: {min: 0.0001, max: 0.02, log: true}
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_revin_1440:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 256
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.2
+    epochs: 50                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 25
+    learning_rate: 0.0001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+                               # W Fazie 1 było 25.0 (bezpiecznie).
+                               # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+                               # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+                               # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+                               # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: {min: 0.0001, max: 0.02, log: true}
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_hpo_baseline_revin:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    epochs: 100
+    min_epochs: 10
+    early_stopping_patience: 6
+    learning_rate: 0.0005
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 50
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 10
+        n_warmup_steps: 10
+      params:
+        # Architektura
+        hidden_size: [64, 128, 256, 512]
+        # Regularyzacja
+        dropout: [0.1, 0.2, 0.3]
+#        learning_rate: [0.0001, 0.0005, 0.001, 0.003, 0.01, 0.03]
+        learning_rate: {min: 0.0001, max: 0.05, log: true}
+
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_hpo_baseline_revin_robust:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    revin_robust: true
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    epochs: 100
+    min_epochs: 10
+    early_stopping_patience: 6
+    learning_rate: 0.0005
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 50
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 10
+        n_warmup_steps: 10
+      params:
+        # Architektura
+        hidden_size: [64, 128, 256, 512]
+        # Regularyzacja
+        dropout: [0.1, 0.2, 0.3]
+#        learning_rate: [0.0001, 0.0005, 0.001, 0.003, 0.01, 0.03]
+        learning_rate: {min: 0.0001, max: 0.05, log: true}
+
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+
+
+  seasonal_naive_24:
+    type: "simple_seasonal"
+    seasonal_period: 24
+#    optimize: false
+
+  trans_revin_robust_96:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    revin_robust: true
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 64
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.2
+    epochs: 50                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 25
+    learning_rate: 0.0001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+                               # W Fazie 1 było 25.0 (bezpiecznie).
+                               # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+                               # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+                               # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+                               # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: {min: 0.0001, max: 0.02, log: true}
+        scheduler_config:
+          pct_start: {min: 0.2, max: 0.5, step: 0.1}
+          final_div_factor: [1000.0, 10000.0]
+
+  trans_revin_robust_336:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    revin_robust: true
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 256
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.3
+    epochs: 100                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 15
+    learning_rate: 0.0001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+        # W Fazie 1 było 25.0 (bezpiecznie).
+        # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+        # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+        # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+        # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: { min: 0.0001, max: 0.02, log: true }
+        scheduler_config:
+          pct_start: { min: 0.2, max: 0.5, step: 0.1 }
+          final_div_factor: [ 1000.0, 10000.0 ]
+
+  trans_revin_robust_720:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    revin_robust: true
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    hidden_size: 512
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.2
+    epochs: 100                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 15
+    learning_rate: 0.001
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+        # W Fazie 1 było 25.0 (bezpiecznie).
+        # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+        # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+        # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+        # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: { min: 0.0001, max: 0.02, log: true }
+        scheduler_config:
+          pct_start: { min: 0.2, max: 0.5, step: 0.1 }
+          final_div_factor: [ 1000.0, 10000.0 ]
+
+  trans_revin_robust_1440:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Konfiguracja stała ---
+    use_exogenous: true
+    use_revin: true          # Szukamy architektury, która radzi sobie SAMA
+    revin_robust: true
+    hidden_size: 256
+    batch_size: 128           # Duży batch dla szybkości i stabilności
+    num_heads: 4           # Standardowe głowice
+    num_encoder_layers: 2  # Płytkie vs średnie (głębokie rzadko pomagają w TS)
+    dim_ff_multiplier: 4.0    # Stała, ale w formacie listy, żeby framework to łyknął
+    weight_decay: 0.0001
+    dropout: 0.2
+    epochs: 100                # Krótszy trening wystarczy do selekcji
+    min_epochs: 10
+    early_stopping_patience: 15
+    learning_rate: 0.01
+    scheduler_config:
+      type: "onecycle"
+
+      # Parametry kształtu krzywej:
+      pct_start: 0.3         # 10% treningu to Warmup (wzrost LR) - dla 100 epok = 10 epok
+      div_factor: 100.0       # Startujemy z poziomu: learning_rate / 10
+      final_div_factor: 10000.0 # Kończymy na poziomie: learning_rate / 10
+      anneal_strategy: "cos" # Kosinusowy kształt zbocza (łagodny)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    # --- KONFIGURACJA HPO (OPTUNA) ---
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 50.0       # Odrzucamy 50% najgorszych wyników (medianę).
+        # W Fazie 1 było 25.0 (bezpiecznie).
+        # Teraz nie chcemy "średniaków", szukamy idealnego LR.
+        n_startup_trials: 5    # Czekamy tylko 5 prób, żeby ustalić baseline.
+        # Przy 20 próbach czekanie 10 (jak w Fazie 1) zjadłoby połowę budżetu.
+        n_warmup_steps: 10     # To MUSI zostać.
+        # Nawet przy ReVIN, OneCycle potrzebuje ~8-9 epok na rozbieg.
+        # Nie wolno oceniać modelu wcześniej.
+        n_min_trials: 5        # Minimum statystyczne.
+      params:
+        learning_rate: { min: 0.0001, max: 0.02, log: true }
+        scheduler_config:
+          pct_start: { min: 0.2, max: 0.5, step: 0.1 }
+          final_div_factor: [ 1000.0, 10000.0 ]
+
+  var:
+    type: "var"
+    enforce_stationarity: false # Stabilność systemu
+    enforce_invertibility: false
+    max_lags: 1
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "default_target_pipeline"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: false, method: "standard" }
+
+    maxiter: 100
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 50
+      params:
+        trend: ["n", "c", "ct"]
+        max_lags:
+          min: 1
+          max: 168  # Przy 7 kolumnach p=12 to już ~600 parametrów
+          step: 1
+
+experiments:
+  - name: "hpo_no_revin_w96"
+    description: "Architecture Search on Window 336 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline"
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3
+      evaluation_metric: "mse"
+
+  - name: "hpo_no_revin_w336"
+    description: "Architecture Search on Window 336 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline"
+
+    validation_setup:
+      window_size: 336
+      forecast_steps: 96
+      n_folds: 3              
+      evaluation_metric: "mse"
+
+  - name: "hpo_no_revin_w720"
+    description: "Architecture Search on Window 720 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline"
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "hpo_no_revin_w1440"
+    description: "Architecture Search on Window 1440 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "hpo_revin_w96"
+    description: "Architecture Search on Window 336 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline_revin"
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "hpo_revin_w336"
+    description: "Architecture Search on Window 336 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline_revin"
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "hpo_revin_robust_w336"
+    description: "Architecture Search on Window 336 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline_revin_robust"
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "hpo_revin_w720"
+    description: "Architecture Search on Window 720 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline_revin"
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "hpo_revin_w1440"
+    description: "Architecture Search on Window 1440 (No RevIN)"
+    dataset: "etth1_multivar"
+    models:
+      - name: "trans_hpo_baseline_revin"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "revin_w96"
+    description: "Architecture Search on Window 1440 (No RevIN)"
+    dataset: "etth1_multivar"
+    models: ["trans_revin_96", "trans_revin_robust_96"]
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "revin_w336"
+    description: "Architecture Search on Window 1440 (No RevIN)"
+    dataset: "etth1_multivar"
+    models: ["trans_revin_336", "trans_revin_robust_336"]
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "revin_w720"
+    description: "Architecture Search on Window 1440 (No RevIN)"
+    dataset: "etth1_multivar"
+    models: ["trans_revin_720","trans_revin_robust_720"]
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "revin_w1440"
+    description: "Architecture Search on Window 1440 (No RevIN)"
+    dataset: "etth1_multivar"
+    models: ["trans_revin_1440","trans_revin_robust_1440"]
+
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_96"
+    description: "naive 96"
+    dataset: "etth1_multivar"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+
+  - name: "var_96_96"
+    description: "var 96 96"
+    dataset: "etth1_multivar"
+    models:
+      - name: "var"
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "var_336_96"
+    description: "var 336 96"
+    dataset: "etth1_multivar"
+    models:
+      - name: "var"
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "var_720_96"
+    description: "var 720 96"
+    dataset: "etth1_multivar"
+    models:
+      - name: "var"
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "var_1440_96"
+    description: "var 1440 96"
+    dataset: "etth1_multivar"
+    models:
+      - name: "var"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"

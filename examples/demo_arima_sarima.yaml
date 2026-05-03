@@ -1,0 +1,127 @@
+# ============================================================================
+# Demo Dataset - ARIMA and SARIMA Examples
+# ============================================================================
+# Purpose: Demonstrate univariate ARIMA and SARIMA models
+# Models: ARIMA (non-seasonal) + SARIMA (with seasonal component)
+# Note: ARIMA/SARIMA do not use exogenous variables in this framework
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    # ARIMA/SARIMA are univariate - no covariates used
+    # (Exogenous variables would require ARIMAX/SARIMAX - not implemented)
+
+models:
+  # ------------------------------------------------------------------------
+  # ARIMA - Autoregressive Integrated Moving Average (Non-seasonal)
+  # ------------------------------------------------------------------------
+  arima_baseline:
+    type: "arima"
+
+    # ARIMA order: (p, d, q)
+    # p: Autoregressive order (use past values)
+    # d: Differencing order (make series stationary)
+    # q: Moving average order (use past errors)
+    p: 2
+    d: 1
+    q: 2
+
+    use_exogenous: false  # ARIMA is univariate only
+
+  # ------------------------------------------------------------------------
+  # SARIMA - Seasonal ARIMA (With Seasonal Component)
+  # ------------------------------------------------------------------------
+  sarima_hourly:
+    type: "sarima"  # SARIMA type for seasonal models
+
+    # ARIMA order: (p, d, q)
+    p: 1
+    d: 1
+    q: 1
+
+    # SARIMA seasonal order: (P, D, Q, seasonal_period)
+    # P: Seasonal AR order
+    # D: Seasonal differencing
+    # Q: Seasonal MA order
+    # seasonal_period: Seasonal period (24 for hourly data with daily seasonality)
+    P: 1
+    D: 1
+    Q: 1
+    seasonal_period: 24  # Daily seasonality
+
+    use_exogenous: false
+
+  # ------------------------------------------------------------------------
+  # SARIMA with Weekly Seasonality (NOT USED IN DEMO - TOO SLOW)
+  # ------------------------------------------------------------------------
+  # sarima_weekly:
+  #   type: "sarima"
+  #
+  #   p: 1
+  #   d: 1
+  #   q: 1
+  #
+  #   # Weekly seasonality (168 hours = 7 days)
+  #   # WARNING: Large seasonal_period (>100) makes SARIMA extremely slow
+  #   # (~20-40 minutes per fold). Use LSTM/Transformer for large periods.
+  #   P: 1
+  #   D: 1
+  #   Q: 1
+  #   seasonal_period: 168
+  #
+  #   use_exogenous: false
+
+experiments:
+  - name: "demo_arima_sarima"
+    dataset: "demo_energy"
+    models: ["arima_baseline", "sarima_hourly"]  # sarima_weekly removed (too slow)
+    validation_setup:
+      forecast_steps: 24  # 1 day ahead
+      n_folds: 3
+      window_size: 168  # 1 week of history
+      evaluation_metric: "mse"
+
+# ============================================================================
+# USAGE NOTES
+# ============================================================================
+#
+# 1. ARIMA vs SARIMA:
+#    - ARIMA: For non-seasonal data or when seasonality is removed
+#    - SARIMA: For data with clear seasonal patterns (daily, weekly, yearly)
+#
+# 2. Order Selection:
+#    - Start with simple orders: p=1,d=1,q=1 (with P=1,D=1,Q=1 for SARIMA)
+#    - Use ACF/PACF plots to determine p and q
+#    - d is usually 1 or 2 (check stationarity tests)
+#
+# 3. Seasonal Period (s):
+#    - Hourly data with daily pattern: s=24
+#    - Hourly data with weekly pattern: s=168 (24*7)
+#    - Daily data with weekly pattern: s=7
+#    - Daily data with yearly pattern: s=365
+#
+# 4. Computational Cost:
+#    - ARIMA: Fast (seconds per fold)
+#    - SARIMA with s=24: Moderate (~3 minutes per fold)
+#    - SARIMA with s=168: VERY SLOW (~20-40 minutes per fold)
+#    - Recommendation: Use SARIMA only for s<50. For larger periods, use LSTM/Transformer.
+#
+# 5. Limitations:
+#    - Univariate only (no exogenous variables)
+#    - For ARIMAX/SARIMAX support, see VAR or neural models
+#    - Large seasonal periods (s>24) can be computationally expensive
+#
+# 6. Run Example:
+#    python scripts/train.py --config examples/demo_arima_sarima.yaml --experiment demo_arima_sarima
+#
+# ============================================================================

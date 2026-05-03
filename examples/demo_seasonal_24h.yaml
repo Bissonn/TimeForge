@@ -1,0 +1,77 @@
+# ============================================================================
+# Test: Daily Seasonal Initialization (24h period)
+# ============================================================================
+# Purpose: Test if daily cycle (24h) works better than weekly (168h)
+# Key insight: Dec 31 (Sylwester) initialized with Dec 30 (Saturday)
+#              instead of Dec 24 (Christmas Eve) - much better match!
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    future_covariates:
+      - "is_weekend"
+      - "is_business_hours"
+
+models:
+  transformer_seasonal_24h:
+    type: "transformer"
+    architecture: "encoder-decoder"
+    strategy: "iterative"
+
+    hidden_size: 128
+    num_heads: 8
+    num_encoder_layers: 3
+    num_decoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+
+    # ⭐ KEY: Daily seasonal initialization (24h cycle)
+    tgt_init: "seasonal"
+    seasonal_period: 24  # Initialize with yesterday's pattern
+
+    auxiliary_loss:
+      enabled: true
+      weight: 0.15
+
+    epochs: 20
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+experiments:
+  - name: "test_seasonal_24h"
+    dataset: "demo_energy"
+    models: ["transformer_seasonal_24h"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 168  # Need >= 168 for context
+      evaluation_metric: "mse"

@@ -1,0 +1,217 @@
+# ============================================================================
+# Demo - LSTM: Direct vs Iterative Strategy + HPO
+# ============================================================================
+# Purpose: Compare direct and iterative LSTM strategies with HPO tuning
+# Dataset: demo_energy_demand.csv
+# Horizon: 24 steps (1 day ahead)
+# ============================================================================
+#
+# KLUCZOWA RÓŻNICA: direct vs iterative
+# ============================================================================
+#
+# ITERATIVE (sliding window, autoregresywny):
+#   Trening:    X = [t-168..t-1], y = t+1 (jeden krok w przód)
+#   Inferencja: 24 kroki przez pętlę - każda predykcja wchodzi do okna
+#   Zalety:     Prosta architektura, małe modele, dobra ekstrapolacja
+#   Wady:       Error accumulation - błędy narastają przez 24 kroki
+#               Train/inference mismatch (trening na ground truth, test na predykcjach)
+#
+# DIRECT (multi-step, jednorazowy output):
+#   Trening:    X = [t-168..t-1], y = [t+1, t+2, ..., t+24] (24 kroki naraz)
+#   Inferencja: Jeden forward pass - wszystkie 24 kroki jednocześnie
+#   Zalety:     Brak error accumulation, spójne predykcje wielokrokowe
+#   Wady:       Większy output head (24x), gorsza ekstrapolacja poza horyzont
+#               Wymaga więcej danych (musi nauczyć się wszystkich 24 offsetów)
+#
+# KIEDY WYBRAĆ:
+#   Iterative: Krótki horyzont (h<=12), mało danych, kluczowa interpretowalność
+#   Direct:    Długi horyzont (h>=24), dużo danych, kowrianty future_covariates
+#
+# ============================================================================
+# USAGE:
+#
+#   # Krok 1: HPO - znajdź najlepsze parametry dla obu strategii
+#   python scripts/train.py --config examples/demo_lstm_direct_vs_iterative.yaml \
+#                           --experiment demo_lstm_comparison --optimize
+#
+#   # Krok 2: Ewaluacja z najlepszymi parametrami
+#   python scripts/train.py --config examples/demo_lstm_direct_vs_iterative.yaml \
+#                           --experiment demo_lstm_comparison
+#
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    time_features: ["hour", "day_of_week"]
+
+models:
+  # --------------------------------------------------------------------------
+  # MODEL 1: LSTM Iterative (autoregresywny, 1 krok na raz)
+  # --------------------------------------------------------------------------
+  # Predykcja 24h przez 24 iteracje pętli sliding window.
+  # Uwaga: Error accumulation - błędy z kroku t wpływają na krok t+1
+  # --------------------------------------------------------------------------
+  lstm_iterative:
+    type: "lstm"
+    strategy: "iterative"         # Autoregresywny - 24 osobne forward passy
+
+    # Defaults (będą nadpisane przez HPO best_params jeśli dostępne)
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+
+    epochs: 30
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 5
+
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3
+      div_factor: 25.0
+      final_div_factor: 10000.0
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+
+    use_exogenous: true
+
+    # HPO: szukamy hidden_size, learning_rate, dropout
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15               # Krótkie demo (zwiększ do 30-50 dla realnych eksperymentów)
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 5
+        n_warmup_steps: 3
+      params:
+        hidden_size: [64, 128, 256]
+        dropout: [0.0, 0.1, 0.2, 0.3]
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+
+  # --------------------------------------------------------------------------
+  # MODEL 2: LSTM Direct (multi-step, wszystkie 24 kroki naraz)
+  # --------------------------------------------------------------------------
+  # Jeden forward pass → 24 predykcje jednocześnie.
+  # Brak error accumulation, ale model musi nauczyć się 24 różnych offsetów.
+  # --------------------------------------------------------------------------
+  lstm_direct:
+    type: "lstm"
+    strategy: "direct"            # Multi-step - 1 forward pass dla całego horyzontu
+
+    # Defaults (będą nadpisane przez HPO best_params jeśli dostępne)
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+
+    epochs: 30
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 5
+
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3
+      div_factor: 25.0
+      final_div_factor: 10000.0
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+
+    use_exogenous: true
+
+    # Ten sam search space co iterative - fair comparison
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 5
+        n_warmup_steps: 3
+      params:
+        hidden_size: [64, 128, 256]
+        dropout: [0.0, 0.1, 0.2, 0.3]
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+
+experiments:
+  - name: "demo_lstm_comparison"
+    dataset: "demo_energy"
+    models:
+      - "lstm_iterative"
+      - "lstm_direct"
+    validation_setup:
+      forecast_steps: 24          # 1 dzień - wystarczający by zobaczyć różnicę strategii
+      n_folds: 1                  # 1 fold dla szybkiego demo
+      window_size: 168            # 1 tydzień historii (168h)
+      evaluation_metric: "mse"
+      early_stopping_validation_percentage: 15
+
+# ============================================================================
+# CZEGO SZUKAĆ W WYNIKACH
+# ============================================================================
+#
+# Iterative zwykle lepszy na:
+#   - Pierwszych krokach (h=1..6): błąd akumulacji jeszcze mały
+#   - Danych z silnym lokalnym trendem (jutro podobne do dziś)
+#
+# Direct zwykle lepszy na:
+#   - Dalekich krokach (h=18..24): brak error accumulation
+#   - Danych z regularną strukturą (godzinowe wzorce)
+#   - Danych z kowriantami future (is_weekend, is_business_hours)
+#
+# Typowe wyniki per_channel (z per_channel w backtest_metrics.json):
+#   Iterative: MAE rośnie monotonicznie od h=1 do h=24
+#   Direct:    MAE relatywnie płaskie dla wszystkich 24 kroków
+#
+# ============================================================================
+# HPO W KONTEKŚCIE DIRECT vs ITERATIVE
+# ============================================================================
+#
+# Iterative HPO:
+#   - hidden_size: większy niekoniecznie lepszy (error accumulation i tak dominuje)
+#   - dropout: ważniejszy - pomaga zapobiec overfittingowi na 1-krokowych celach
+#   - learning_rate: zazwyczaj mniejszy optymalny (stabilny trening)
+#
+# Direct HPO:
+#   - hidden_size: większy może pomóc (więcej pojemności dla 24 offsetów)
+#   - dropout: mniej krytyczny (brak autoregresji = brak error accumulation)
+#   - learning_rate: może być większy (direct jest mniej czuły na LR)
+#
+# ============================================================================

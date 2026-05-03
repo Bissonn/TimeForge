@@ -1,0 +1,38 @@
+# Core dependencies
+numpy>=1.21.0
+pandas>=2.0.0
+pyyaml>=5.4.0
+ruamel.yaml
+schema
+
+# PyTorch (install separately based on your platform)
+# See: https://pytorch.org/get-started/locally/
+# CPU: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# CUDA: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+
+# Statistical models
+statsmodels>=0.13.0
+
+# Machine learning utilities
+scikit-learn>=1.0.0
+
+# Hyperparameter optimization
+optuna>=3.0.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Development and testing
+pytest>=7.0.0
+pytest-cov>=3.0.0
+pytest-mock>=3.6.0
+hypothesis>=6.0.0
+
+# Optional: Jupyter notebooks
+# jupyter>=1.0.0
+# ipykernel>=6.0.0
+
+# Optional: Enhanced visualizations
+# plotly>=5.0.0

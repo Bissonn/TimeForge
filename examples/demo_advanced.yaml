@@ -1,0 +1,225 @@
+# ============================================================================
+# Demo Dataset - Advanced Features
+# ============================================================================
+# Purpose: Demonstrate train/inference mismatch mitigation techniques
+# Features demonstrated:
+#   1. Auxiliary multi-step loss (Transformer)
+#   2. Prediction noise injection (Transformer)
+#   3. Input noise + FC dropout (LSTM)
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    future_covariates:
+      - "is_weekend"
+      - "is_business_hours"
+
+models:
+  # ------------------------------------------------------------------------
+  # Transformer with Auxiliary Loss
+  # ------------------------------------------------------------------------
+  transformer_aux_loss:
+    type: "transformer"
+    architecture: "encoder-decoder"
+    strategy: "iterative"
+
+    hidden_size: 128
+    num_heads: 8
+    num_encoder_layers: 3
+    num_decoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+
+    # ⭐ BEST PRACTICE: Seasonal initialization (daily cycle)
+    # Tested: 14% better MAE than last_value (5.59 vs 6.52)
+    tgt_init: "seasonal"
+    seasonal_period: 24  # Initialize with yesterday's pattern
+
+    # ⭐ FEATURE: Auxiliary Multi-Step Loss
+    # Trains model to predict intermediate steps, not just final horizon
+    auxiliary_loss:
+      enabled: true
+      weight: 0.15  # 15% of total loss from intermediate steps
+
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    early_stopping_patience: 10
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+  # ------------------------------------------------------------------------
+  # Transformer with Prediction Noise
+  # ------------------------------------------------------------------------
+  transformer_pred_noise:
+    type: "transformer"
+    architecture: "encoder-decoder"
+    strategy: "iterative"
+
+    hidden_size: 128
+    num_heads: 8
+    num_encoder_layers: 3
+    num_decoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+
+    tgt_init: "seasonal"
+    seasonal_period: 24
+
+    # ⭐ FEATURE: Prediction Noise Injection
+    # Adds noise to decoder input during training to simulate prediction errors
+    prediction_noise:
+      enabled: true
+      std: 0.05  # 5% noise (relative to normalized data)
+      schedule: "curriculum"  # Gradually increase noise during training
+
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    early_stopping_patience: 10
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+  # ------------------------------------------------------------------------
+  # Transformer with BOTH Features
+  # ------------------------------------------------------------------------
+  transformer_both:
+    type: "transformer"
+    architecture: "encoder-decoder"
+    strategy: "iterative"
+
+    hidden_size: 128
+    num_heads: 8
+    num_encoder_layers: 3
+    num_decoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+
+    tgt_init: "seasonal"
+    seasonal_period: 24
+
+    # ⭐ FEATURE: Auxiliary Loss + Prediction Noise (RECOMMENDED)
+    auxiliary_loss:
+      enabled: true
+      weight: 0.15
+
+    prediction_noise:
+      enabled: true
+      std: 0.05
+      schedule: "curriculum"
+
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    early_stopping_patience: 10
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+  # ------------------------------------------------------------------------
+  # LSTM with Mismatch Mitigation
+  # ------------------------------------------------------------------------
+  lstm_mitigated:
+    type: "lstm"
+    strategy: "iterative"
+    future_covariate_mode: "stepwise"  # Required for iterative + future_covariates
+
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    fc_dropout: 0.1  # ⭐ Additional dropout before FC layer
+
+    # ⭐ FEATURE: Input Noise Injection
+    # Adds noise to last timestep of sliding window (simulates prediction errors)
+    input_noise_injection:
+      enabled: true
+      std: 0.03  # Conservative for LSTM
+      probability: 1.0  # Apply to all samples
+
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    early_stopping_patience: 10
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+experiments:
+  - name: "demo_advanced_features_h24"
+    dataset: "demo_energy"
+    models:
+      - "transformer_aux_loss"
+      - "transformer_pred_noise"
+      - "transformer_both"
+      - "lstm_mitigated"
+    validation_setup:
+      forecast_steps: 24  # 1 day ahead
+      n_folds: 3
+      window_size: 168  # 1 week of history
+      evaluation_metric: "mse"
+      early_stopping_validation_percentage: 15  # For HPO mode only

@@ -1,0 +1,109 @@
+# ============================================================================
+# Demo Dataset - Quick Test
+# ============================================================================
+# Purpose: Fast smoke test to verify the pipeline works before running
+#          long experiments
+# Dataset: demo_energy (synthetic, 2 years hourly)
+# Training time: ~30 seconds per model
+# Use this to verify:
+#   - Configuration is correct
+#   - Data loading works
+#   - Model training completes
+#   - No errors in the pipeline
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+
+models:
+  # Quick Transformer test (minimal architecture)
+  quick_transformer:
+    type: "transformer"
+    architecture: "encoder-decoder"
+    strategy: "iterative"
+
+    # MINIMAL architecture for speed
+    hidden_size: 32
+    num_heads: 4
+    num_encoder_layers: 1
+    num_decoder_layers: 1
+    dim_ff_multiplier: 2.0
+    dropout: 0.1
+
+    tgt_init: "last_value"
+
+    # SHORT training
+    epochs: 5
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    # early_stopping disabled (no early_stopping_patience specified)
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+  # Quick LSTM test (minimal architecture)
+  quick_lstm:
+    type: "lstm"
+    strategy: "iterative"
+
+    # MINIMAL architecture
+    hidden_size: 32
+    num_layers: 1
+    dropout: 0.1
+
+    # SHORT training
+    epochs: 5
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    # early_stopping disabled (no early_stopping_patience specified)
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: false
+
+experiments:
+  - name: "demo_quick_smoke_test"
+    dataset: "demo_energy"
+    models: ["quick_transformer", "quick_lstm"]
+    validation_setup:
+      forecast_steps: 12  # Short horizon (12 hours)
+      n_folds: 1  # Single fold for speed
+      window_size: 48  # 2 days of history
+      evaluation_metric: "mse"
+      early_stopping_validation_percentage: 15  # For HPO mode only

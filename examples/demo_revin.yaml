@@ -1,0 +1,344 @@
+# ============================================================================
+# Demo - Normalization Comparison: StandardScaler vs RevIN vs RevIN Robust
+# ============================================================================
+# Purpose: Compare three normalization strategies for time series forecasting
+# Model: Transformer encoder-only, direct strategy (identical architecture)
+# Dataset: demo_energy_demand.csv
+# ============================================================================
+#
+# THREE NORMALIZATION STRATEGIES
+# ============================================================================
+#
+# 1. StandardScaler (global normalization):
+#    - Normalizes over the entire training set: mean=0, std=1
+#    - Single set of parameters (mean, std) fixed for all samples
+#    - Weakness: distribution may shift over time (non-stationarity)
+#    - Best for: stable, stationary time series
+#
+# 2. RevIN (Reversible Instance Normalization):
+#    - Per-sample normalization: each input window normalized independently
+#    - Forward:  x_norm = (x - mean(x)) / (std(x) + eps)
+#    - Inverse:  y_pred = y_norm * std(x) + mean(x)   <- "reversal"
+#    - Non-stationarity problem disappears: each instance has its own scale
+#    - revin_affine=true: model learns correction (gamma, beta) for denormalization
+#    - Best for: series with drift, varying variance, multi-period seasonality
+#
+# 3. RevIN Robust:
+#    - Same as RevIN but uses MEDIAN and IQR instead of MEAN and STD
+#    - Resistant to outliers (spikes, special events in data)
+#    - Forward:  x_norm = (x - median(x)) / (IQR(x) + eps)
+#    - Best for: data with outliers, spikes, heavy-tailed series
+#
+# WHEN TO USE:
+#   StandardScaler:  Stationary data, few outliers, fast training
+#   RevIN:           Non-stationary data, trend, multi-period seasonality
+#   RevIN Robust:    Data with outliers (demand spikes, failures, events)
+#
+# NOTE ON CONVERGENCE:
+#   RevIN Robust uses IQR as the denominator, which is numerically less stable
+#   than STD. Optimization starts slower and requires more epochs to converge.
+#   This is why HPO with early stopping is essential - fixed epoch counts
+#   unfairly penalize Robust variants that need more training time.
+#
+# ============================================================================
+# USAGE:
+#   # Step 1: HPO - find optimal learning_rate for each normalization strategy
+#   python scripts/train.py --config examples/demo_revin.yaml \
+#                           --experiment demo_revin_comparison --optimize
+#
+#   # Step 2: Evaluate with best params from HPO
+#   python scripts/train.py --config examples/demo_revin.yaml \
+#                           --experiment demo_revin_comparison
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    time_features: ["hour", "day_of_week"]
+
+models:
+  # --------------------------------------------------------------------------
+  # MODEL 1: StandardScaler (global normalization, no RevIN)
+  # --------------------------------------------------------------------------
+  # Classic approach: statistical normalization over entire training set.
+  # mean and std computed from full training window - fixed for all samples.
+  # --------------------------------------------------------------------------
+  transformer_standard_scaler:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100              # Upper bound - early stopping determines actual duration
+    batch_size: 32
+    learning_rate: 0.001     # Default, overridden by HPO best_params
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3
+      div_factor: 25.0
+      final_div_factor: 10000.0
+
+    use_revin: false         # No RevIN - global normalization only
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"  # Z-score: (x - mean) / std
+
+    use_exogenous: true
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+
+  # --------------------------------------------------------------------------
+  # MODEL 2: RevIN (Reversible Instance Normalization)
+  # --------------------------------------------------------------------------
+  # Instance normalization: each input window normalized independently.
+  # Prediction reversed back to original scale before computing loss.
+  #
+  # Parameters:
+  #   use_revin:     true  -> enable RevIN
+  #   revin_affine:  true  -> learn gamma (scale) and beta (shift) for correction
+  #   revin_eps:     1e-5  -> epsilon for numerical stability (avoid div by zero)
+  #   revin_robust:  false -> use mean + std (standard RevIN)
+  # --------------------------------------------------------------------------
+  transformer_revin:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3
+      div_factor: 25.0
+      final_div_factor: 10000.0
+
+    # RevIN: instance-level normalization
+    use_revin: true
+    revin_affine: true       # Learnable gamma, beta (recommended - better denormalization)
+    revin_eps: 0.00001       # 1e-5: safe epsilon (never 0, we divide by std)
+    revin_robust: false      # Standard: mean + std
+
+    # Global preprocessing still active as a base normalization layer
+    # RevIN operates ON TOP as additional per-instance normalization
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+
+  # --------------------------------------------------------------------------
+  # MODEL 3: RevIN Robust (median + IQR instead of mean + std)
+  # --------------------------------------------------------------------------
+  # Same as RevIN but resistant to outliers:
+  #   Standard RevIN: normalizes by MEAN and STD -> sensitive to spikes
+  #   Robust RevIN:   normalizes by MEDIAN and IQR -> resistant to spikes
+  #
+  # Why IQR is better for outlier-heavy data:
+  #   Sample: [100, 102, 98, 103, 200]  <- spike!
+  #   mean=120.6, std=43.2  -> normalization completely distorted
+  #   median=102, IQR=4     -> normalization stable despite the spike
+  #
+  # Trade-off: IQR is numerically less stable than STD, so optimization
+  # converges slower. HPO + early stopping compensates for this automatically.
+  #
+  # Parameters:
+  #   revin_robust: true  -> use median + IQR instead of mean + std
+  # --------------------------------------------------------------------------
+  transformer_revin_robust:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3
+      div_factor: 25.0
+      final_div_factor: 10000.0
+
+    # RevIN Robust: median + IQR
+    use_revin: true
+    revin_affine: true       # Learnable gamma, beta
+    revin_eps: 0.00001       # 1e-5
+    revin_robust: true       # Robust: median + IQR instead of mean + std
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+
+experiments:
+  - name: "demo_revin_comparison"
+    dataset: "demo_energy"
+    models:
+      - "transformer_standard_scaler"
+      - "transformer_revin"
+      - "transformer_revin_robust"
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3                  # 3 folds for reliable comparison
+      window_size: 168            # 1 week of history
+      evaluation_metric: "mse"
+      early_stopping_validation_percentage: 15  # 15% val split during --optimize
+
+# ============================================================================
+# RevIN IMPLEMENTATION DETAILS
+# ============================================================================
+#
+# Data flow with RevIN (forward pass):
+#
+#   X_raw  -> [StandardScaler] -> X_scaled -> [RevIN forward] -> X_norm
+#                                                                   |
+#                                                             Transformer
+#                                                                   |
+#   Y_pred <- [RevIN inverse] <- Y_norm_pred (using stats from X_raw)
+#
+# RevIN forward (revin_robust=false):
+#   mean   = X.mean(dim=1, keepdim=True)        # Per-instance, over time axis
+#   std    = X.std(dim=1, keepdim=True)
+#   X_norm = (X - mean) / (std + eps)
+#   X_norm = X_norm * gamma + beta              # Learnable affine (if revin_affine=true)
+#
+# RevIN inverse:
+#   Y_pred = (Y_norm - beta) / gamma            # Reverse affine
+#   Y_pred = Y_pred * std + mean                # Back to original scale
+#
+# RevIN forward (revin_robust=true):
+#   median = X.median(dim=1, keepdim=True)
+#   q75, q25 = X.quantile([0.75, 0.25])
+#   iqr    = q75 - q25
+#   X_norm = (X - median) / (iqr + eps)
+#
+# ============================================================================
+# WHAT TO LOOK FOR IN RESULTS
+# ============================================================================
+#
+# Demo dataset (demo_energy_demand.csv) has:
+#   - Slow upward trend       -> RevIN should help (adapts scale per instance)
+#   - Daily and weekly seasonality
+#   - Random spikes           -> RevIN Robust may help
+#
+# Expected observations (after HPO + early stopping):
+#   StandardScaler >= RevIN >= RevIN Robust  (stationary data, few outliers)
+#   RevIN Robust >= RevIN                    (data with many outliers / spikes)
+#   RevIN more stable across folds than StandardScaler
+#
+# Key metrics to compare:
+#   - MAE/MSE per model and per fold
+#   - Fold-to-fold stability (std across folds)
+#   - Number of epochs used (early stopping feedback on convergence speed)
+#
+# ============================================================================
+# TUNABLE PARAMETERS
+# ============================================================================
+#
+# revin_affine:
+#   true  (recommended): model learns post-denormalization correction
+#   false:               pure normalization without correction (faster, worse)
+#
+# revin_eps:
+#   1e-5  (default): safe for most data
+#   1e-3:            for data with very small variance (avoid numerical instability)
+#   Increase if:     NaN during training, loss explodes at the start
+#
+# ============================================================================

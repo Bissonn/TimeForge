@@ -1,0 +1,212 @@
+# ============================================================================
+# Demo - HPO (Hyperparameter Optimization) dla Transformer encoder-only direct
+# ============================================================================
+# Purpose: Demonstrate Optuna-based HPO searching hidden_size, learning_rate, dropout
+# Model: Transformer encoder-only (direct strategy)
+# Dataset: demo_energy_demand.csv
+# Run mode: --optimize (HPO mode)
+# ============================================================================
+#
+# USAGE:
+#   # Run HPO to find best hyperparameters:
+#   python scripts/train.py --config examples/demo_hpo_transformer.yaml \
+#                           --experiment demo_hpo_transformer \
+#                           --optimize
+#
+#   # After HPO, run evaluation with best params:
+#   python scripts/train.py --config examples/demo_hpo_transformer.yaml \
+#                           --experiment demo_hpo_transformer \
+#                           --evaluate
+#
+# HOW IT WORKS:
+#   --optimize mode:
+#     - Splits training fold: 85% train / 15% validation (early_stopping_validation_percentage)
+#     - Early stopping on validation loss (prevents overfitting during HPO)
+#     - Runs n_trials Optuna trials, saves best_params.json to results/
+#     - Prunes bad trials early (percentile pruner removes bottom 25%)
+#
+#   --evaluate mode (default):
+#     - Loads best_params.json from latest HPO run (if exists)
+#     - Trains on full fold (no val split)
+#     - Runs walk-forward cross-validation
+#
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    time_features: ["hour", "day_of_week"]
+
+models:
+  # --------------------------------------------------------------------------
+  # Transformer encoder-only, direct strategy - target for HPO
+  # --------------------------------------------------------------------------
+  transformer_hpo:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+
+    # --- Fixed architecture parameters (not searched) ---
+    num_heads: 4               # Fixed: standard for demo
+    num_encoder_layers: 2      # Fixed: shallow is usually enough for energy
+    dim_ff_multiplier: 4.0     # Fixed: standard FFN ratio
+    optimizer: "adam"
+    loss: "mse"
+    weight_decay: 0.0001
+
+    # --- Default values (overridden by HPO best_params if available) ---
+    hidden_size: 128           # Will be searched: [64, 128, 256]
+    dropout: 0.1               # Will be searched: [0.05, 0.1, 0.2, 0.3]
+    learning_rate: 0.001       # Will be searched: log-uniform [1e-4, 1e-2]
+
+    epochs: 30
+    batch_size: 32
+    early_stopping_patience: 5  # Used in --optimize mode only
+
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3
+      div_factor: 25.0
+      final_div_factor: 10000.0
+      anneal_strategy: "cos"
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+
+    # ========================================================================
+    # HPO CONFIGURATION (active only with --optimize flag)
+    # ========================================================================
+    optimize: true
+    optimization:
+      method: "optuna"
+
+      # Number of trials (reduced for demo; use 50-100 for real experiments)
+      n_trials: 20
+
+      # Pruner: remove bottom 25% of trials early (saves time)
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 5   # Don't prune first 5 trials (let them finish)
+        n_warmup_steps: 5     # Don't prune first 5 epochs of any trial
+
+      # Search space: what to optimize
+      params:
+        # Architecture: how much model capacity
+        # List = categorical choices
+        hidden_size: [64, 128, 256]
+
+        # Regularization: prevent overfitting
+        # List = categorical choices
+        dropout: [0.05, 0.1, 0.2, 0.3]
+
+        # Learning rate: most critical hyperparameter
+        # Dict with min/max/log = continuous log-uniform range
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true           # Log scale: samples 1e-4, ..., 1e-2 uniformly
+
+        # Scheduler shape: how fast to warm up and cool down
+        scheduler_config:
+          pct_start:          # Warmup fraction
+            min: 0.1
+            max: 0.4
+            step: 0.1         # Discrete: 0.1, 0.2, 0.3, 0.4
+
+experiments:
+  - name: "demo_hpo_transformer"
+    dataset: "demo_energy"
+    models: ["transformer_hpo"]
+    validation_setup:
+      forecast_steps: 24          # 1 day ahead
+      n_folds: 1                  # 1 fold for HPO demo (faster)
+      window_size: 168            # 1 week of history
+      evaluation_metric: "mse"
+
+      # Fraction of training data used for validation in --optimize mode
+      # In --evaluate mode (default), this is IGNORED (full fold used for training)
+      early_stopping_validation_percentage: 15
+
+# ============================================================================
+# SEARCH SPACE FORMATS
+# ============================================================================
+#
+# 1. Categorical (list of values):
+#    hidden_size: [64, 128, 256, 512]
+#    dropout: [0.1, 0.2, 0.3]
+#    optimizer: ["adam", "adamw"]
+#
+# 2. Continuous range:
+#    learning_rate: {min: 0.0001, max: 0.01, log: true}   # log scale
+#    weight_decay:  {min: 0.0,    max: 0.01}               # linear scale
+#
+# 3. Discrete range (with step):
+#    pct_start: {min: 0.1, max: 0.5, step: 0.1}           # 0.1, 0.2, 0.3, 0.4, 0.5
+#    num_heads: {min: 2,   max: 8,   step: 2}              # 2, 4, 6, 8
+#
+# 4. Nested (scheduler params):
+#    scheduler_config:
+#      pct_start: {min: 0.1, max: 0.4, step: 0.1}
+#      final_div_factor: [1000.0, 10000.0]
+#
+# ============================================================================
+# PRUNER TYPES
+# ============================================================================
+#
+# percentile:  Remove bottom N% trials (recommended, simple)
+#   percentile: 25.0       # Remove worst 25% after startup
+#
+# median:      Remove trials worse than median
+#   (no extra params)
+#
+# hyperband:   Successive halving (aggressive early stopping)
+#   min_resource: 1, max_resource: 50, reduction_factor: 3
+#
+# none:        No pruning (run all trials to completion)
+#   type: "none"
+#
+# ============================================================================
+# RESULTS
+# ============================================================================
+#
+# After HPO (--optimize), results are saved to:
+#   results/<experiment_name>/<model_name>_<timestamp>/
+#     best_params.json           <- Best hyperparameters found
+#     backtest_metrics.json      <- HPO validation metrics
+#     data/                      <- Per-fold metadata
+#
+# best_params.json format:
+#   {
+#     "hidden_size": 128,
+#     "dropout": 0.1,
+#     "learning_rate": 0.0023,
+#     "scheduler_config": {"pct_start": 0.3}
+#   }
+#
+# The --evaluate run automatically finds the latest best_params.json
+# and applies them to the final cross-validation.
+#
+# ============================================================================

@@ -1,0 +1,116 @@
+# ============================================================================
+# Demo Dataset - Baseline Comparison with Covariates
+# ============================================================================
+# Purpose: Compare Transformer vs LSTM with weather covariates
+# Dataset: demo_energy_demand.csv (2 years, hourly, 17,520 rows)
+# Target: energy_demand
+# Covariates: temperature, humidity, wind_speed + time features
+# Models: Transformer encoder-only + LSTM (both direct strategy)
+# Horizon: 24 steps (1 day ahead)
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    # Past covariates: weather features
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    # Time features: auto-generated from date column
+    time_features: ["hour", "day_of_week"]
+
+models:
+  transformer_baseline:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"  # Direct strategy supports covariates
+
+    # Model architecture
+    hidden_size: 128
+    num_heads: 8
+    num_encoder_layers: 3
+    num_decoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+
+    # Target initialization
+    tgt_init: "last_value"
+
+    # Training
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    # Early stopping
+    # No early stopping for demo (keeps training simple and fast)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: true  # Enable HPO for this model
+
+  lstm_baseline:
+    type: "lstm"
+    strategy: "direct"  # Direct strategy for compatibility with covariates
+
+    # LSTM architecture
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+
+    # Training
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+
+    # Early stopping
+    # No early stopping for demo (keeps training simple and fast)
+
+    # Preprocessing
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    use_exogenous: true
+    optimize: true  # Enable HPO for this model
+
+experiments:
+  - name: "demo_baseline_comparison_h24"
+    dataset: "demo_energy"
+    models: ["transformer_baseline", "lstm_baseline"]
+    validation_setup:
+      forecast_steps: 24  # 1 day ahead
+      n_folds: 3
+      window_size: 168  # 1 week of history
+      evaluation_metric: "mse"
+      # For HPO mode (--optimize): split training data for early stopping
+      # In backtesting mode (--evaluate, default): this is ignored (uses full fold)
+      early_stopping_validation_percentage: 15  # Use 15% of training data for validation

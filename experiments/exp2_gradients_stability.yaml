@@ -1,0 +1,518 @@
+datasets:
+  ETTh1:
+    path: "data/ETTh1.csv"
+    columns: ["OT"]
+    freq: "h"
+
+models:
+  seasonal_naive_24:
+    type: "simple_seasonal"
+    seasonal_period: 24
+
+  lstm_direct:
+    type: "lstm"
+    strategy: "direct"
+    batch_size: 128
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    max_grad_norm: 1.0
+
+    # Gradient monitoring
+    gradient_monitor:
+      enabled: true
+      log_dir: "results/gradients"
+      log_interval: 50
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 5
+        n_warmup_steps: 3
+      params:
+        learning_rate: {min: 0.0001, max: 0.05, log: true}
+
+  lstm_iterative:
+    type: "lstm"
+    strategy: "iterative"
+    batch_size: 128
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    max_grad_norm: 1.0
+
+    # Gradient monitoring
+    gradient_monitor:
+      enabled: true
+      log_dir: "results/gradients"
+      log_interval: 50
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 5
+        n_warmup_steps: 3
+      params:
+        learning_rate: {min: 0.0001, max: 0.05, log: true}
+
+  transformer_enc_only_direct:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    batch_size: 128
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dropout: 0.1
+    use_revin: false  # Fair comparison
+
+    # Gradient monitoring
+    gradient_monitor:
+      enabled: true
+      log_dir: "results/gradients"
+      log_interval: 50
+
+    # Attention capture
+    attention_capture:
+      enabled: true
+      log_dir: "results/attention"
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 5
+        n_warmup_steps: 3
+      params:
+        learning_rate: {min: 0.0001, max: 0.05, log: true}
+
+  sarima:
+    type: "sarima"
+    seasonal_period: 24
+    p: 1
+    d: 1
+    q: 1
+    P: 1
+    D: 1
+    Q: 1
+    use_exogenous: false
+    enforce_stationarity: false
+    enforce_invertibility: true
+    method: "lbfgs"
+    maxiter: 50
+
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling:
+              enabled: true
+              method: "standard"
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 30
+      params:
+        trend: ["n", "c"]
+        p: {min: 0, max: 3}
+        d: {min: 0, max: 1}
+        q: {min: 0, max: 3}
+        P: {min: 0, max: 1}
+        D: {min: 0, max: 1}
+        Q: {min: 0, max: 1}
+
+experiments:
+  - name: "grad_test_w96_24"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 96
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w336_24"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 336
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w720_24"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 720
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w1440_24"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 1440
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w96_96"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 96
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w336_96"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 336
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w720_96"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 720
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w1440_96"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 1440
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w96_192"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 96
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w336_192"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 336
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w720_192"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 720
+      evaluation_metric: "mse"
+
+  - name: "grad_test_w1440_192"
+    dataset: "ETTh1"
+    models: ["lstm_direct", "lstm_iterative", "transformer_enc_only_direct"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 1440
+      evaluation_metric: "mse"
+
+
+  - name: "grad_test_sarima_w96_24"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 96
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w336_24"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 336
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w720_24"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 720
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w1440_24"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3
+      window_size: 1440
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w96_96"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 96
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w336_96"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 336
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w720_96"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 720
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w1440_96"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 96
+      n_folds: 3
+      window_size: 1440
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w96_192"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 96
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w336_192"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 336
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w720_192"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 720
+      evaluation_metric: "mse"
+
+  - name: "grad_test_sarima_w1440_192"
+    dataset: "ETTh1"
+    models: ["sarima"]
+    validation_setup:
+      forecast_steps: 192
+      n_folds: 3
+      window_size: 1440
+      evaluation_metric: "mse"
+
+  - name: "simple_w96_24"
+    description: "naive 24"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 24
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w96_96"
+    description: "naive 96"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w96_192"
+    description: "naive 192"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 96        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 192
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w336_24"
+    description: "naive 24"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 24
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w336_96"
+    description: "naive 96"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w336_192"
+    description: "naive 192"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 336        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 192
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w720_24"
+    description: "naive 24"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 24
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w720_96"
+    description: "naive 96"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w720_192"
+    description: "naive 192"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 720        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 192
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w1440_24"
+    description: "naive 24"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 24
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w1440_96"
+    description: "naive 96"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 96
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"
+
+  - name: "simple_w1440_192"
+    description: "naive 192"
+    dataset: "ETTh1"
+    models:
+      - name: "seasonal_naive_24"
+
+    validation_setup:
+      window_size: 1440        # Zgodnie z ustaleniami (złoty środek)
+      forecast_steps: 192
+      n_folds: 3              # 1 fold dla oszczędności czasu w HPO
+      evaluation_metric: "mse"

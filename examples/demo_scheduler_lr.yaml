@@ -1,0 +1,481 @@
+# ============================================================================
+# Demo - LR Scheduler Comparison
+# ============================================================================
+# Purpose: Compare all available LR schedulers with HPO + early stopping
+# Model: Transformer encoder-only (direct) - identical architecture, different LR schedule
+# Dataset: demo_energy_demand.csv
+# ============================================================================
+#
+# AVAILABLE SCHEDULERS:
+#   1. onecycle    - OneCycleLR        (batch-level, warmup + cosine annealing)
+#   2. cosine      - CosineAnnealingLR (batch-level, smooth cosine curve)
+#   3. plateau     - ReduceLROnPlateau (epoch-level, adaptive - reacts to plateau)
+#   4. step        - StepLR            (epoch-level, fixed reduction periods)
+#   5. exponential - ExponentialLR     (epoch-level, continuous exponential decay)
+#   (none)         - No scheduler      (constant LR - baseline for comparison)
+#
+# WHEN TO USE:
+#   onecycle:    Default choice. Fast convergence, good results.
+#   cosine:      Smooth decay without warmup. Good for fine-tuning.
+#   plateau:     When training is unstable or optimal epoch count is unknown.
+#   step:        When you know the schedule manually (e.g. reduce LR every 20 epochs).
+#   exponential: Simple continuous decay. Rarely better than onecycle.
+#   none:        Diagnostic baseline - does any scheduler help at all?
+#
+# USAGE:
+#   # Step 1: HPO - find optimal learning_rate and scheduler params
+#   python scripts/train.py --config examples/demo_scheduler_lr.yaml \
+#                           --experiment demo_scheduler_comparison --optimize
+#
+#   # Step 2: Evaluate with best params from HPO
+#   python scripts/train.py --config examples/demo_scheduler_lr.yaml \
+#                           --experiment demo_scheduler_comparison
+#
+# WHY TWO PHASES:
+#   --optimize: Finds best learning_rate (and scheduler-specific params) for each
+#               scheduler type using Optuna. Early stopping determines optimal
+#               training duration - no need to guess epochs manually.
+#   --evaluate: Uses best_params.json from HPO, trains on full fold, runs
+#               walk-forward cross-validation for reliable comparison.
+#
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  demo_energy:
+    path: "data/demo_energy_demand.csv"
+    columns: ["energy_demand"]
+    freq: "h"
+
+    past_covariates:
+      - "temperature"
+      - "humidity"
+      - "wind_speed"
+
+    time_features: ["hour", "day_of_week"]
+
+# Common architecture parameters - identical for all models
+# Only difference: scheduler_config and its HPO search space
+# --------------------------------------------------------------------------
+
+models:
+  # --------------------------------------------------------------------------
+  # BASELINE: No scheduler (constant LR throughout training)
+  # --------------------------------------------------------------------------
+  # HPO: searches only learning_rate
+  # Early stopping: determines optimal training duration automatically
+  # --------------------------------------------------------------------------
+  transformer_no_scheduler:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100              # Upper bound - early stopping will cut short
+    batch_size: 32
+    learning_rate: 0.001     # Default, overridden by HPO best_params
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+    use_exogenous: true
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+    # No scheduler_config = constant LR
+
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+
+  # --------------------------------------------------------------------------
+  # 1. OneCycleLR (RECOMMENDED)
+  # --------------------------------------------------------------------------
+  # Phases: warmup (LR rises) -> peak -> cosine annealing (LR falls)
+  #
+  # Fixed params:
+  #   div_factor:       Start LR = learning_rate / div_factor
+  #   final_div_factor: End LR   = learning_rate / final_div_factor
+  #   anneal_strategy:  "cos" (smooth) or "linear"
+  #
+  # HPO searches:
+  #   learning_rate: peak LR (most impactful)
+  #   pct_start:     fraction of epochs for warmup phase
+  # --------------------------------------------------------------------------
+  transformer_onecycle:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+    use_exogenous: true
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+    scheduler_config:
+      type: "onecycle"
+      pct_start: 0.3           # Default, overridden by HPO
+      div_factor: 25.0
+      final_div_factor: 10000.0
+      anneal_strategy: "cos"
+
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+        scheduler_config:
+          pct_start:           # Warmup fraction: 10%, 20%, 30%, or 40%
+            min: 0.1
+            max: 0.4
+            step: 0.1
+
+  # --------------------------------------------------------------------------
+  # 2. CosineAnnealingLR
+  # --------------------------------------------------------------------------
+  # Smooth LR decay following cosine curve: from learning_rate down to eta_min
+  # No warmup phase (starts at full learning_rate)
+  #
+  # HPO searches:
+  #   learning_rate: starting LR
+  #   eta_min:       minimum LR at end of training
+  # --------------------------------------------------------------------------
+  transformer_cosine:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+    use_exogenous: true
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+    scheduler_config:
+      type: "cosine"
+      eta_min: 0.00001         # Default, overridden by HPO
+
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+        scheduler_config:
+          eta_min:             # Minimum LR floor
+            min: 0.000001
+            max: 0.0005
+            log: true
+
+  # --------------------------------------------------------------------------
+  # 3. ReduceLROnPlateau (ADAPTIVE)
+  # --------------------------------------------------------------------------
+  # Reduces LR when validation loss stops improving for 'patience' epochs.
+  # Does not require knowing the schedule upfront - reacts to actual training.
+  #
+  # In --optimize mode: uses validation loss (correct behavior)
+  # In --evaluate mode: uses training loss (less optimal, expected)
+  #
+  # HPO searches:
+  #   learning_rate: initial LR
+  #   patience:      how many epochs to wait before reducing LR
+  #   factor:        LR multiplier on reduction
+  # --------------------------------------------------------------------------
+  transformer_plateau:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+    use_exogenous: true
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+    scheduler_config:
+      type: "plateau"
+      mode: "min"
+      factor: 0.5             # Default, overridden by HPO
+      patience: 5             # Default, overridden by HPO
+      threshold: 0.0001
+      threshold_mode: "rel"
+      cooldown: 2
+      min_lr: 0.00001
+
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+        scheduler_config:
+          patience: [3, 5, 7, 10]    # Epochs to wait before reducing LR
+          factor: [0.3, 0.5, 0.7]    # LR multiplier on each reduction
+
+  # --------------------------------------------------------------------------
+  # 4. StepLR
+  # --------------------------------------------------------------------------
+  # Reduces LR by fixed factor every step_size epochs.
+  # Predictable schedule - best when you have domain knowledge.
+  #
+  # HPO searches:
+  #   learning_rate: initial LR
+  #   step_size:     how often to reduce LR (in epochs)
+  #   gamma:         reduction multiplier
+  #
+  # Example (learning_rate=0.001, step_size=20, gamma=0.5):
+  #   Epochs  1-20: LR = 0.001
+  #   Epochs 21-40: LR = 0.0005
+  #   Epochs 41-60: LR = 0.00025
+  #   Epochs 61-80: LR = 0.000125
+  # --------------------------------------------------------------------------
+  transformer_step:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+    use_exogenous: true
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+    scheduler_config:
+      type: "step"
+      step_size: 20           # Default, overridden by HPO
+      gamma: 0.5              # Default, overridden by HPO
+
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+        scheduler_config:
+          step_size: [15, 20, 30]    # Larger values = gentler schedule
+          gamma: [0.3, 0.5, 0.7]    # Lower values = more aggressive reduction
+
+  # --------------------------------------------------------------------------
+  # 5. ExponentialLR
+  # --------------------------------------------------------------------------
+  # Multiplies LR by gamma after every epoch - continuous exponential decay.
+  # Simpler than onecycle, but no warmup and no control over curve shape.
+  #
+  # HPO searches:
+  #   learning_rate: initial LR
+  #   gamma:         per-epoch multiplier (higher = slower decay)
+  #
+  # Example (learning_rate=0.001, gamma=0.98, 100 epochs):
+  #   Epoch   1: LR = 0.001 * 0.98^1  = 0.00098
+  #   Epoch  20: LR = 0.001 * 0.98^20 = 0.000668
+  #   Epoch  50: LR = 0.001 * 0.98^50 = 0.000364
+  #   Epoch 100: LR = 0.001 * 0.98^100 = 0.000133
+  # --------------------------------------------------------------------------
+  transformer_exponential:
+    type: "transformer"
+    architecture: "encoder-only"
+    strategy: "direct"
+    hidden_size: 128
+    num_heads: 4
+    num_encoder_layers: 2
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    optimizer: "adam"
+    loss: "mse"
+    early_stopping_patience: 10
+    use_exogenous: true
+    preprocessing:
+      preprocessing_groups:
+        - name: "scaling"
+          apply_to: "__targets__"
+          pipeline:
+            scaling: { enabled: true, method: "standard" }
+    scheduler_config:
+      type: "exponential"
+      gamma: 0.98             # Default, overridden by HPO (was 0.95 - too aggressive)
+
+    optimize: true
+    optimization:
+      method: "optuna"
+      n_trials: 15
+      pruner_config:
+        type: "percentile"
+        percentile: 25.0
+        n_startup_trials: 3
+        n_warmup_steps: 5
+      params:
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+          log: true
+        scheduler_config:
+          gamma: [0.95, 0.97, 0.98, 0.99]  # Higher = slower decay
+
+experiments:
+  - name: "demo_scheduler_comparison"
+    dataset: "demo_energy"
+    models:
+      - "transformer_no_scheduler"   # Baseline: constant LR
+      - "transformer_onecycle"       # Recommended: warmup + cosine
+      - "transformer_cosine"         # Smooth decay without warmup
+      - "transformer_plateau"        # Adaptive: reacts to plateau
+      - "transformer_step"           # Fixed schedule: every N epochs
+      - "transformer_exponential"    # Continuous exponential decay
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 3                    # 3 folds for reliable comparison
+      window_size: 168
+      evaluation_metric: "mse"
+      early_stopping_validation_percentage: 15  # 15% val split during --optimize
+
+# ============================================================================
+# LR SCHEDULE VISUAL:
+# ============================================================================
+#
+# onecycle (learning_rate=0.001, pct_start=0.3):
+#   LR |     *
+#      |   *   *
+#      | *       *
+#      |           * * * *
+#      +----------------------> epochs
+#      0   30     100
+#
+# cosine (learning_rate=0.001, eta_min=0.00001):
+#   LR | *
+#      |  *
+#      |    *
+#      |       * *
+#      |              * * * * (approaches eta_min)
+#      +----------------------> epochs
+#
+# plateau: LR drops in steps when loss stops improving
+#   LR | * * * * * *
+#      |             * * * * *
+#      |                       * * *
+#      +----------------------> epochs
+#
+# step (step_size=20, gamma=0.5):
+#   LR | * * * * * * * * * * * * * * * * * * * *
+#      |                                         * * * * * * * * * * * * * * * * * * * *
+#      |                                                                                  * * *
+#      +----------------------> epochs
+#      0                       20                                       40
+#
+# exponential (gamma=0.98):
+#   LR | * * * * * * * * * * * * * * * * * * * * ...
+#      (smooth continuous decay, no jumps)
+#      +----------------------> epochs
+#
+# ============================================================================
+# DECISION GUIDE
+# ============================================================================
+#
+# Don't know what to pick:          -> onecycle (always a good starting point)
+# Unstable training (loss jumps):   -> plateau (adapts automatically)
+# Fine-tuning / transfer learning:  -> cosine with small eta_min
+# Long training (>100 epochs):      -> step or plateau
+# HPO - searching LR in search space: -> onecycle (max_lr = learning_rate automatically)
+#
+# ============================================================================

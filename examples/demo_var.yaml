@@ -1,0 +1,155 @@
+# ============================================================================
+# Demo Dataset - VAR (Vector Autoregression) Examples
+# ============================================================================
+# Purpose: Demonstrate multivariate VAR models with and without exogenous variables
+# Models: VAR (multivariate), VAR with exogenous (VARX)
+# Note: VAR requires multiple target variables
+# ============================================================================
+
+paths:
+  model_save_path_template: "results/models/{model_name}_{dataset_name}.pkl"
+
+logging:
+  level: "INFO"
+
+datasets:
+  # ------------------------------------------------------------------------
+  # Multivariate Dataset (for proper VAR usage)
+  # Simplified to 2 variables for faster demo
+  # ------------------------------------------------------------------------
+  demo_energy_multivariate:
+    path: "data/demo_energy_demand.csv"
+    # VAR requires multiple targets (minimum 2)
+    columns:
+      - "energy_demand"
+      - "temperature"  # Treat as target for VAR
+
+    freq: "h"
+
+    # No covariates for faster demo
+    # past_covariates:
+    #   - "wind_speed"
+    #
+    # future_covariates:
+    #   - "is_weekend"
+    #   - "is_business_hours"
+
+models:
+  # ------------------------------------------------------------------------
+  # VAR - Basic Vector Autoregression (No Exogenous)
+  # ------------------------------------------------------------------------
+  var_basic:
+    type: "var"
+
+    # VAR order (maximum lag order)
+    # Reduced for faster demo (24 → 12)
+    max_lags: 12  # Use last 12 hours (faster than 24)
+
+    use_exogenous: false
+
+  # ------------------------------------------------------------------------
+  # VAR with Auto-Selected Order (AIC/BIC)
+  # ------------------------------------------------------------------------
+  var_auto:
+    type: "var"
+
+    # Auto-select optimal lag order (VAR internally uses AIC/BIC for order selection)
+    max_lags: 12     # Reduced for faster demo (48 → 12)
+
+    use_exogenous: false
+
+  # ------------------------------------------------------------------------
+  # VARX - VAR with Exogenous Variables
+  # ------------------------------------------------------------------------
+  varx_with_covariates:
+    type: "var"
+
+    max_lags: 12  # Reduced for faster demo
+
+    # ⭐ Enable exogenous variables
+    use_exogenous: true
+
+    # Note: VAR uses past_covariates only (no future covariates support in statsmodels VAR)
+    # Future covariates are ignored
+
+  # ------------------------------------------------------------------------
+  # VAR for Univariate (NOT SUPPORTED - commented out)
+  # ------------------------------------------------------------------------
+  # var_univariate:
+  #   type: "var"
+  #   max_lags: 12
+  #   use_exogenous: false
+  #
+  # NOTE: VAR requires MINIMUM 2 endogenous variables!
+  # VAR on univariate data would be equivalent to AR(p), but framework enforces multivariate.
+  # For univariate, use ARIMA instead.
+
+experiments:
+  # ------------------------------------------------------------------------
+  # Experiment: Multivariate VAR (Simplified - only var_basic for speed)
+  # ------------------------------------------------------------------------
+  # NOTE: VAR requires at least 2 target variables (multivariate only)
+  # For univariate forecasting, use ARIMA/SARIMA instead
+  # ------------------------------------------------------------------------
+  - name: "demo_var_multivariate"
+    dataset: "demo_energy_multivariate"
+    models: ["var_basic"]  # Only test var_basic for quick verification
+    validation_setup:
+      forecast_steps: 24
+      n_folds: 1  # Reduced from 3 for faster demo
+      window_size: 168
+      evaluation_metric: "mse"
+
+# ============================================================================
+# USAGE NOTES
+# ============================================================================
+#
+# 1. VAR Requirements:
+#    - Designed for MULTIVARIATE data (multiple target variables)
+#    - All targets forecasted simultaneously
+#    - Captures cross-variable dependencies
+#
+# 2. VAR vs ARIMA:
+#    - VAR: Multiple targets, captures interactions
+#    - ARIMA: Single target, simpler, often better for univariate
+#    - For univariate data, prefer ARIMA over VAR
+#
+# 3. Lag Order Selection:
+#    - Specify max_lags (e.g., 24 for daily pattern, 48 for 2-day)
+#    - VAR internally uses AIC/BIC for optimal lag selection
+#    - Trade-off: More lags = more flexibility but more parameters
+#
+# 4. Exogenous Variables (VARX):
+#    - use_exogenous=true: Uses past_covariates
+#    - future_covariates NOT supported in statsmodels VAR
+#    - For future covariates, use LSTM/Transformer
+#
+# 5. Multivariate Example:
+#    columns: [energy_demand, temperature, humidity]
+#    - VAR forecasts all 3 simultaneously
+#    - Models interdependencies (e.g., temp affects demand)
+#
+# 6. Computational Cost:
+#    - Scales with: n_variables² × max_lags
+#    - 3 variables × max_lags=24: Fast (seconds)
+#    - 10 variables × max_lags=48: Slow (minutes)
+#
+# 7. When to Use VAR:
+#    ✅ Multiple related time series
+#    ✅ Cross-variable dependencies important
+#    ✅ Need interpretable linear model
+#    ❌ Single variable (use ARIMA)
+#    ❌ Need future covariates (use neural models)
+#
+# 8. Run Example:
+#    python scripts/train.py --config examples/demo_var.yaml --experiment demo_var_multivariate
+#
+#    NOTE: VAR requires minimum 2 variables - no univariate experiment available
+#    For univariate forecasting, use examples/demo_arima_sarima.yaml instead
+#
+# 9. Tips:
+#    - Check stationarity first (all variables should be stationary)
+#    - Start with max_lags=24 for hourly data
+#    - Compare with ARIMA baseline for single targets
+#
+# ============================================================================
