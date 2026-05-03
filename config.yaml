@@ -1,0 +1,195 @@
+# differencing:
+#   auto: adf | kpss | none  # Choice of method for automatically determining the degree of differencing
+#   order: 0                 # Manual differencing (if auto = none)
+#   seasonal_order: 0
+#   seasonal_period: 0
+#   max_d: 2                 # Maximum number of differencing steps in auto mode
+#   max_D: 1
+#   p_value_threshold: 0.05  # Significance threshold for the stationarity test
+
+# ===================================================================
+# MAIN EXPERIMENT CONFIGURATION
+# ===================================================================
+experiments:
+  - name: "short_term_forecast"
+    description: "Comparison of models for a 30-step horizon."
+
+    # --- Validation "Arena" Configuration for this experiment ---
+    validation_setup:
+      forecast_steps: 30
+      n_folds: 19
+      max_window_size: 90
+      early_stopping_validation_percentage: 20
+
+# ===================================================================
+# AVAILABLE DATASET DEFINITIONS
+# ===================================================================
+datasets:
+  gemini_data:
+    path: "data/gemini_data.csv"
+    columns: ["price"]
+    freq: "h"
+  ETTh1:
+    path: "data/ETTh1.csv"
+    columns: ["HUFL", "HULL"]
+    freq: "h"
+  illness:
+    path: "data/national_illness.csv"
+    columns: ["ILITOTAL"]
+  traffic:
+    path: "data/traffic.csv"
+    columns: ["0","1"]
+
+# ===================================================================
+# COMMON MODEL CONFIGURATION
+# ===================================================================
+models:
+  arima:
+    # Base parameters, used when optimization is disabled
+    p: 5
+    d: 1
+    q: 0
+    window_size: 30
+    # Optimization configuration for this model
+    optimize: true
+    optimization:
+      method: grid
+      params:
+        p: [1, 2]
+        d: [1]
+        q: [0, 1]
+        window_size: [30] # In this case, we are testing only one window size
+
+  sarima:
+    p: 1
+    d: 1
+    q: 0
+    P: 1
+    D: 0
+    Q: 0
+    seasonal_period: 52
+    window_size: 70
+    optimize: true
+    optimization:
+      method: grid
+      params:
+        p: [1, 2]
+        d: [1]
+        q: [0, 1]
+        P: [0, 1]
+        D: [0, 1]
+        Q: [0, 1]
+        seasonal_period: [24]
+        window_size: [30] # You can add more options to search
+
+  var:
+    window_size: 30
+    max_lags: 5
+    optimize: true
+    optimization:
+      method: grid
+      params:
+        window_size: [30, 60]
+        max_lags: [51, 52, 53]
+        ic: ['aic', 'bic'] # Information criterion for selecting the number of lags
+    preprocessing:
+      scaling:
+        enabled: true
+        method: 'standard' # VAR often works better with standardization
+
+  lstm_direct:
+    # Base parameters
+    window_size: 90
+    hidden_size: 128
+    num_layers: 2
+    # Optimization configuration
+    optimize: true
+    optimization:
+      method: optuna
+      params:
+        window_size: [30, 60, 90]
+        hidden_size: [64, 128]
+        num_layers: [1, 2]
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+        n_trials: 10 # n_trials is part of `params`
+    # Preprocessing configuration specific to this model
+    preprocessing:
+      scaling:
+        enabled: true
+        method: 'minmax'
+#      log_transform:
+#        enabled: true
+#      differencing:
+#        enabled: True
+#        auto: 'adf'
+#        max_d: 2
+#        max_D: 1
+#        seasonal_period: 52
+#        p_value_threshold: 0.05
+
+  lstm_iterative:
+    # Base parameters
+    window_size: 90
+    hidden_size: 128
+    num_layers: 2
+    # Optimization configuration
+    optimize: true
+    optimization:
+      method: optuna
+      params:
+        window_size: [30, 60, 90]
+        hidden_size: [64, 128]
+        num_layers: [1, 2]
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+        n_trials: 10 # n_trials is part of `params`
+    # Preprocessing configuration specific to this model
+    preprocessing:
+      scaling:
+        enabled: true
+        method: 'minmax'
+#      log_transform:
+#        enabled: true
+
+  transformer:
+    # Base parameters
+    window_size: 90
+    hidden_size: 128
+    num_heads: 4 # Ensure hidden_size (128) is divisible by num_heads (4)
+    num_encoder_layers: 4
+    dim_ff_multiplier: 4.0
+    dropout: 0.1
+    # Optimization configuration
+    optimize: true
+    optimization:
+      method: optuna
+      params:
+        window_size: [30, 60, 90]
+        hidden_size: [64, 128]
+        num_heads: [2, 4, 8] # Example heads, ensure they divide hidden_size
+        num_encoder_layers: [2, 4, 8]
+        dim_ff_multiplier: [3.0, 4.0]
+        dropout:
+          min: 0.0
+          max: 0.2
+        learning_rate:
+          min: 0.0001
+          max: 0.01
+        n_trials: 10
+    # Preprocessing configuration specific to this model
+    preprocessing:
+      scaling:
+        enabled: true
+        method: 'minmax'
+#      log_transform:
+#        enabled: true
+#      differencing:
+#        enabled: True
+#        auto: 'adf'
+#        max_d: 2
+#        max_D: 1
+#        seasonal_period: 52
+#        p_value_threshold: 0.05
